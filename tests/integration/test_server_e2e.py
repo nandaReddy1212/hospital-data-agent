@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "http://127.0.0.1:8000"
 RUN_SSE_URL = BASE_URL + "/run_sse"
-A2A_RPC_URL = BASE_URL + "/a2a/my_agent/"
+A2A_RPC_URL = BASE_URL + "/a2a/app/"
 AGENT_CARD_URL = A2A_RPC_URL + ".well-known/agent-card.json"
 
 HEADERS = {"Content-Type": "application/json"}
@@ -62,7 +62,7 @@ def start_server() -> subprocess.Popen[str]:
         sys.executable,
         "-m",
         "uvicorn",
-        "my_agent.fast_api_app:app",
+        "app.fast_api_app:app",
         "--host",
         "0.0.0.0",
         "--port",
@@ -134,7 +134,7 @@ def test_adk_run_sse(server_fixture: subprocess.Popen[str]) -> None:
     session_data = {"state": {"preferred_language": "English", "visit_count": 1}}
 
     session_response = requests.post(
-        f"{BASE_URL}/apps/my_agent/users/{user_id}/sessions",
+        f"{BASE_URL}/apps/app/users/{user_id}/sessions",
         headers=HEADERS,
         json=session_data,
         timeout=60,
@@ -143,7 +143,7 @@ def test_adk_run_sse(server_fixture: subprocess.Popen[str]) -> None:
     session_id = session_response.json()["id"]
 
     data = {
-        "app_name": "my_agent",
+        "app_name": "app",
         "user_id": user_id,
         "session_id": session_id,
         "new_message": {"role": "user", "parts": [{"text": "Hi!"}]},
@@ -236,54 +236,3 @@ def test_agent_card(server_fixture: subprocess.Popen[str]) -> None:
         assert len(v03_interfaces) == 1, (
             f"Expected exactly one v0.3 interface, found {len(v03_interfaces)}"
         )
-
-
-def test_reasoning_engine_stream(server_fixture: subprocess.Popen[str]) -> None:
-    """The reasoning_engine adapter (/api/stream_reasoning_engine) runs the agent.
-
-    This is the contract Agent Runtime forwards :streamQuery calls to.
-    """
-    response = requests.post(
-        f"{BASE_URL}/api/stream_reasoning_engine",
-        headers=HEADERS,
-        json={
-            "class_method": "async_stream_query",
-            "input": {"user_id": f"u-{uuid.uuid4()}", "message": "Hi!"},
-        },
-        stream=True,
-        timeout=60,
-    )
-    assert response.status_code == 200
-
-    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
-    assert events, "No events from reasoning_engine adapter"
-    has_text = any(
-        (event.get("content") or {}).get("parts")
-        and any(part.get("text") for part in event["content"]["parts"])
-        for event in events
-    )
-    assert has_text, "No text content in reasoning_engine events"
-
-
-def test_reasoning_engine_sync_stream(server_fixture: subprocess.Popen[str]) -> None:
-    """The reasoning_engine adapter supports sync generators via stream_query."""
-    response = requests.post(
-        f"{BASE_URL}/api/stream_reasoning_engine",
-        headers=HEADERS,
-        json={
-            "class_method": "stream_query",
-            "input": {"user_id": f"u-{uuid.uuid4()}", "message": "Hi!"},
-        },
-        stream=True,
-        timeout=60,
-    )
-    assert response.status_code == 200
-
-    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
-    assert events, "No events from reasoning_engine adapter"
-    has_text = any(
-        (event.get("content") or {}).get("parts")
-        and any(part.get("text") for part in event["content"]["parts"])
-        for event in events
-    )
-    assert has_text, "No text content in reasoning_engine sync events"

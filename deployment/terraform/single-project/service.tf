@@ -56,7 +56,7 @@ resource "google_vertex_ai_reasoning_engine" "app" {
 
       env {
         name  = "OTEL_SERVICE_NAME"
-        value = "adk-learning"
+        value = "my-agent"
       }
 
       # Prompt/response content capture, off by default. Go: set "true" to log

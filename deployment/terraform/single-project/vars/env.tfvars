@@ -1,5 +1,5 @@
 # Project name used for resource naming
-project_name = "adk-learning"
+project_name = "my-agent"
 
 # Your Google Cloud project id
 project_id = "your-gcp-project-id"
