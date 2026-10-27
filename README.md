@@ -22,14 +22,26 @@ Agent: (calls get_database_schema → run_sql_query)
 
 | Tool | Purpose |
 |---|---|
-| `get_database_schema` | Lists tables and columns so the agent writes correct SQL |
-| `run_sql_query` | Runs a single `SELECT` statement and returns up to 50 rows |
-| `get_table_row_count` | Quick row count for a table |
+| `get_database_schema` | Tables, columns, join keys, row counts and allowed values for categorical columns |
+| `run_sql_query` | Runs a single read-only `SELECT` and returns up to 50 rows |
+| `explain_query` | Shows the SQLite query plan without running the query |
+
+Tools live in [`app/tools.py`](app/tools.py); the agent definition and instructions are in [`app/agent.py`](app/agent.py).
 
 **Guardrails**
-- Only `SELECT` statements are accepted
-- The database is opened in read-only mode (`mode=ro`), so no query can change data
-- Results are capped at 50 rows to keep responses small
+- Only a single `SELECT` / `WITH` statement per call; anything else is rejected
+- The database is opened read-only (`mode=ro`), so no query can change data, even if validation were bypassed
+- Queries are stopped after 5 seconds (protects against accidental cross joins)
+- Results are capped at 50 rows; the agent is told when results were truncated
+- SQL errors come back with a hint (e.g. "check the schema") so the agent can fix its own query
+
+**Tests**
+
+```bash
+uv run pytest tests/unit
+```
+
+17 unit tests cover the tools directly (no LLM calls): schema output, query results, row caps, and every guardrail.
 
 ## Data model
 
@@ -76,7 +88,7 @@ Open the local URL it prints and try questions like:
 ## Roadmap
 
 - [x] **Phase 1** – Text-to-SQL agent with schema discovery and read-only guardrails
-- [ ] **Phase 2** – Stronger tool design: query validation, `explain_query` tool
+- [x] **Phase 2** – Stronger tool design: query validation, timeouts, error hints, `explain_query`, unit tests
 - [ ] **Phase 3** – Session state and memory for follow-up questions
 - [ ] **Phase 4** – Multi-agent design: SQL Writer, SQL Reviewer, Tutor
 - [ ] **Phase 5** – Callbacks: query logging and sensitive-column blocking
