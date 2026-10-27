@@ -53,7 +53,8 @@ and a free Gemini API key from [Google AI Studio](https://aistudio.google.com).
 uvx google-agents-cli setup
 
 # 2. Clone and install
-git clone https://github.com/<your-username>/hospital-data-agent.git
+git clone https://github.com/nandaReddy1212/hospital-data-agent
+cd hospital-data-agent
 agents-cli install
 
 # 3. Add your API key
