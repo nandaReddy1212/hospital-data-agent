@@ -99,3 +99,49 @@ def test_explain_returns_plan():
 
 def test_explain_blocks_non_select():
     assert tools.explain_query("DROP TABLE visits")["status"] == "error"
+
+# --- Session state (Phase 3) -------------------------------------------------
+
+class FakeToolContext:
+    """Stands in for ADK's ToolContext: all these tools use is .state."""
+
+    def __init__(self):
+        self.state = {}
+
+
+def test_successful_query_is_saved_to_state():
+    ctx = FakeToolContext()
+    tools.run_sql_query("SELECT COUNT(*) FROM visits;", tool_context=ctx)
+    assert ctx.state["last_query"] == "SELECT COUNT(*) FROM visits"
+    assert ctx.state["query_history"] == ["SELECT COUNT(*) FROM visits"]
+
+
+def test_failed_query_does_not_overwrite_last_query():
+    ctx = FakeToolContext()
+    tools.run_sql_query("SELECT COUNT(*) FROM visits", tool_context=ctx)
+    tools.run_sql_query("SELECT no_such_column FROM visits", tool_context=ctx)
+    tools.run_sql_query("DELETE FROM visits", tool_context=ctx)
+    assert ctx.state["last_query"] == "SELECT COUNT(*) FROM visits"
+    assert len(ctx.state["query_history"]) == 1
+
+
+def test_query_history_keeps_only_recent_queries():
+    ctx = FakeToolContext()
+    for i in range(tools.MAX_HISTORY + 3):
+        tools.run_sql_query(f"SELECT {i}", tool_context=ctx)
+    history = tools.get_query_history(tool_context=ctx)["queries"]
+    assert len(history) == tools.MAX_HISTORY
+    assert history[-1] == f"SELECT {tools.MAX_HISTORY + 2}"
+
+
+def test_set_answer_format_uses_user_prefix():
+    ctx = FakeToolContext()
+    result = tools.set_answer_format("Table", tool_context=ctx)
+    assert result["status"] == "success"
+    assert ctx.state["user:answer_format"] == "table"
+
+
+def test_set_answer_format_rejects_unknown_value():
+    ctx = FakeToolContext()
+    assert tools.set_answer_format("chart", tool_context=ctx)["status"] == "error"
+    assert "user:answer_format" not in ctx.state

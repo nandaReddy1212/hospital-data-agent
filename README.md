@@ -25,6 +25,8 @@ Agent: (calls get_database_schema → run_sql_query)
 | `get_database_schema` | Tables, columns, join keys, row counts and allowed values for categorical columns |
 | `run_sql_query` | Runs a single read-only `SELECT` and returns up to 50 rows |
 | `explain_query` | Shows the SQLite query plan without running the query |
+| `get_query_history` | Returns the last 5 successful queries in this conversation |
+| `set_answer_format` | Saves whether the user prefers tables or plain-text answers |
 
 Tools live in [`app/tools.py`](app/tools.py); the agent definition and instructions are in [`app/agent.py`](app/agent.py).
 
@@ -33,7 +35,29 @@ Tools live in [`app/tools.py`](app/tools.py); the agent definition and instructi
 - The database is opened read-only (`mode=ro`), so no query can change data, even if validation were bypassed
 - Queries are stopped after 5 seconds (protects against accidental cross joins)
 - Results are capped at 50 rows; the agent is told when results were truncated
+- Gemini API calls retry up to 5 times with exponential backoff (2s, 4s, 8s, 16s) on 429/503 errors
 - SQL errors come back with a hint (e.g. "check the schema") so the agent can fix its own query
+
+**Session state (follow-up questions)**
+
+The agent keeps a small notepad in ADK session state:
+
+| Key | Scope | Purpose |
+|---|---|---|
+| `last_query` | This conversation | The last successful SQL, injected into the instruction so follow-ups like *"same for Radiology"* or *"now by month"* modify it |
+| `query_history` | This conversation | The last 5 successful queries |
+| `user:answer_format` | All of this user's conversations | `table` or `text`; the `user:` prefix makes it outlive a single session |
+
+Tools write state through ADK's `ToolContext`; the instruction reads it with
+`{last_query?}` and `{user:answer_format?}` placeholders. Open the **State** tab
+in the playground to watch it change.
+
+```
+You:   Average inpatient charge by department?
+Agent: (runs SQL, saves it as last_query)
+You:   Only for 2026.
+Agent: (adds a visit_date filter to last_query and re-runs it)
+```
 
 **Tests**
 
@@ -41,7 +65,7 @@ Tools live in [`app/tools.py`](app/tools.py); the agent definition and instructi
 uv run pytest tests/unit
 ```
 
-17 unit tests cover the tools directly (no LLM calls): schema output, query results, row caps, and every guardrail.
+22 unit tests cover the tools directly (no LLM calls): schema output, query results, row caps, every guardrail, and session-state updates.
 
 ## Data model
 
@@ -89,7 +113,7 @@ Open the local URL it prints and try questions like:
 
 - [x] **Phase 1** – Text-to-SQL agent with schema discovery and read-only guardrails
 - [x] **Phase 2** – Stronger tool design: query validation, timeouts, error hints, `explain_query`, unit tests
-- [ ] **Phase 3** – Session state and memory for follow-up questions
+- [x] **Phase 3** – Session state for follow-up questions and user preferences
 - [ ] **Phase 4** – Multi-agent design: SQL Writer, SQL Reviewer, Tutor
 - [ ] **Phase 5** – Callbacks: query logging and sensitive-column blocking
 - [ ] **Phase 6** – Evaluation suite with `agents-cli eval run`

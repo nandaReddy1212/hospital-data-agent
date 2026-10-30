@@ -1,24 +1,40 @@
 """Tools the hospital data agent can call.
-
+ 
 Each function is a plain Python function. ADK reads the function name, the
 docstring and the parameter types, and shows them to Gemini so it can decide
 when to call the tool. That makes the docstrings part of the prompt: keep them
 clear and specific.
-
+ 
 Every tool returns a dict with a "status" key ("success" or "error"), so the
 agent can always tell whether a call worked and recover when it did not.
+ 
+Session state (Phase 3)
+-----------------------
+Tools that take a `tool_context` parameter can read and write session state.
+ADK fills that parameter in automatically and hides it from the model, so the
+model never sees or sends it. Keys used here:
+ 
+  last_query          the last SELECT that ran successfully (this session)
+  query_history       the last few successful queries (this session)
+  user:answer_format  "table" or "text"; the user: prefix keeps it across
+                      all of this user's sessions
 """
 
 import re
 import sqlite3
 import time
 from pathlib import Path
+from typing import Optional
+ 
+from google.adk.tools import ToolContext
 
 DB_PATH = Path(__file__).resolve().parent.parent / "hospital.db"
 
 MAX_ROWS = 50            # rows returned to the model per query
 QUERY_TIMEOUT_SEC = 5    # stop runaway queries (e.g. accidental cross joins)
 MAX_DISTINCT_VALUES = 10 # show allowed values for low-cardinality text columns
+MAX_HISTORY = 5          # queries kept in query_history
+ANSWER_FORMATS = ("table", "text")
 
 
 # ---------------------------------------------------------------------------
@@ -116,33 +132,45 @@ def get_database_schema() -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def _remember_query(tool_context: Optional[ToolContext], query: str) -> None:
+    """Saves a successful query to session state so follow-up questions can build on it."""
+    if tool_context is None:  # called directly, e.g. from unit tests
+        return
+    tool_context.state["last_query"] = query
+    history = list(tool_context.state.get("query_history", []))
+    history.append(query)
+    # Assign a new list (not .append on the stored one) so ADK records the change.
+    tool_context.state["query_history"] = history[-MAX_HISTORY:]
 
-def run_sql_query(query: str) -> dict:
+
+def run_sql_query(query: str, tool_context: Optional[ToolContext] = None) -> dict:
     """Runs ONE read-only SQLite SELECT query on the hospital database and
     returns the column names and rows (at most 50 rows).
-
+ 
     Use this to answer questions about patients, visits, doctors and
     departments. Call get_database_schema first so the column names are right.
     Prefer aggregations (COUNT, SUM, AVG, GROUP BY) over returning many raw rows.
-
+ 
     Args:
         query: A single SQLite SELECT statement (may start with WITH).
     """
     cleaned, error = _validate_select(query)
     if error:
         return {"status": "error", "message": error}
-
+ 
     try:
         conn = _connect_read_only()
         deadline = time.monotonic() + QUERY_TIMEOUT_SEC
         # SQLite calls this every 10,000 steps; returning True aborts the query.
         conn.set_progress_handler(lambda: time.monotonic() > deadline, 10_000)
-
+ 
         cur = conn.execute(cleaned)
         columns = [d[0] for d in cur.description]
         rows = cur.fetchmany(MAX_ROWS + 1)
         conn.close()
-
+ 
+        _remember_query(tool_context, cleaned)
+ 
         truncated = len(rows) > MAX_ROWS
         result = {
             "status": "success",
@@ -157,7 +185,7 @@ def run_sql_query(query: str) -> dict:
         return result
     except Exception as e:
         return {"status": "error", "query": cleaned, "message": str(e), "hint": _hint_for_error(str(e))}
-
+    
 
 def explain_query(query: str) -> dict:
     """Shows how SQLite will execute a SELECT query (its query plan) without
@@ -178,3 +206,25 @@ def explain_query(query: str) -> dict:
         return {"status": "success", "query": cleaned, "plan": plan}
     except Exception as e:
         return {"status": "error", "query": cleaned, "message": str(e), "hint": _hint_for_error(str(e))}
+
+def get_query_history(tool_context: Optional[ToolContext] = None) -> dict:
+    """Returns the most recent successful SQL queries from this conversation,
+    oldest first. Use this when the user refers to an earlier result that is
+    not the most recent one (for example "go back to the query before that").
+    """
+    history = [] if tool_context is None else tool_context.state.get("query_history", [])
+    return {"status": "success", "queries": list(history)}
+
+def set_answer_format(answer_format: str, tool_context: Optional[ToolContext] = None) -> dict:
+    """Saves how the user wants results shown, for this and all future
+    conversations. Call this when the user says they prefer tables or plain text.
+ 
+    Args:
+        answer_format: Either "table" or "text".
+    """
+    value = answer_format.strip().lower()
+    if value not in ANSWER_FORMATS:
+        return {"status": "error", "message": f"answer_format must be one of {list(ANSWER_FORMATS)}."}
+    if tool_context is not None:
+        tool_context.state["user:answer_format"] = value
+    return {"status": "success", "answer_format": value}
