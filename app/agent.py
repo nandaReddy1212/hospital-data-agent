@@ -18,54 +18,84 @@ import os
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
+from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
 
-from .tools import explain_query, get_database_schema, run_sql_query, get_query_history, set_answer_format
+from .prompts import (
+    ANALYST_INSTRUCTION,
+    COORDINATOR_INSTRUCTION,
+    REVIEWER_INSTRUCTION,
+    TUTOR_INSTRUCTION,
+)
+from .tools import (
+    explain_query,
+    get_database_schema,
+    get_query_history,
+    run_sql_query,
+    set_answer_format,
+)
 
 MODEL = "gemini-3.8-flash"
 
-INSTRUCTION = """You are a hospital data assistant and data engineering tutor.
-You answer questions about a SYNTHETIC hospital SQLite database with the tables
-departments, doctors, patients and visits.
- 
-How to answer a data question:
-1. Call get_database_schema to learn the exact columns, join keys and allowed values.
-   You only need to do this once per conversation.
-2. Write ONE SQLite SELECT query and call run_sql_query.
-   - Join tables using the keys listed under "joins" in the schema.
-   - Use the exact spelling and case shown in "allowed_values" when filtering.
-   - Prefer COUNT, SUM, AVG and GROUP BY over returning raw rows.
-3. If the tool returns status "error", read the "hint", fix the SQL and try again.
-   Try at most 3 times, then explain what went wrong.
-4. Reply with the SQL you ran in a ```sql block, then the answer in plain language.
-   When it helps, explain the SQL concept used (JOIN, GROUP BY, window function...).
- 
-If the user asks how a query works or why it might be slow, call explain_query.
- 
-Conversation context (from session state):
-- Last successful query in this conversation (empty if none yet):
-{last_query?}
-- The user's preferred answer format (empty if not set): {user:answer_format?}
- 
-Follow-up questions:
-- Requests like "same for Radiology", "now by month" or "only 2026" refer to the
-  last successful query above. Start from that SQL, change only what the user
-  asked for, and run it again. Do not ask the user to repeat the question.
-- If the user refers to an older result, call get_query_history.
- 
-Answer format:
-- If the preferred format is "table", show results as a markdown table.
-- If it is "text", answer in a few plain sentences.
-- If it is empty, choose whichever is clearer.
-- When the user says how they like answers shown, call set_answer_format.
- 
-Rules:
-- Never invent numbers. Every figure must come from a tool result.
-- You can only read data. If asked to change, add or delete data, say that this
-  assistant is read-only.
-- If a question cannot be answered from these tables, say so and suggest what
-  data would be needed.
-"""
+
+def gemini() -> Gemini:
+    """One Gemini model config shared by every agent, with retries on 429/503."""
+    return Gemini(
+        model=MODEL,
+        retry_options=types.HttpRetryOptions(attempts=5, initial_delay=2, exp_base=2),
+        api_key=os.environ.get("GEMINI_API_KEY"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Agent team
+#
+#                    my_agent (coordinator)
+#                    /                     \
+#          data_analyst                   sql_tutor
+#               |
+#      sql_reviewer (used as a tool)
+#
+# Two multi-agent patterns are used:
+#   1. sub_agents  -> the coordinator TRANSFERS the conversation to a
+#      specialist, which then talks to the user directly.
+#   2. AgentTool   -> the analyst CALLS the reviewer like a function and gets
+#      its reply back; the reviewer never talks to the user.
+# ---------------------------------------------------------------------------
+
+sql_reviewer = Agent(
+    name="sql_reviewer",
+    model=gemini(),
+    description="Reviews a SQL query against the user's question and the schema. "
+                "Send it the question and the full SQL; it replies APPROVED or REVISE.",
+    instruction=REVIEWER_INSTRUCTION,
+    tools=[get_database_schema],
+)
+
+data_analyst = Agent(
+    name="data_analyst",
+    model=gemini(),
+    description="Answers questions that need data from the hospital database by "
+                "writing, reviewing and running SQL. Also handles follow-up questions.",
+    instruction=ANALYST_INSTRUCTION,
+    tools=[
+        get_database_schema,
+        run_sql_query,
+        explain_query,
+        get_query_history,
+        set_answer_format,
+        AgentTool(agent=sql_reviewer),
+    ],
+)
+
+sql_tutor = Agent(
+    name="sql_tutor",
+    model=gemini(),
+    description="Explains SQL and data engineering concepts with examples on the "
+                "hospital tables. Does not fetch data answers.",
+    instruction=TUTOR_INSTRUCTION,
+    tools=[get_database_schema, explain_query],
+)
 
 root_agent = Agent(
     # Keep in sync with agents-cli-manifest.yaml: agents-cli derives this name
@@ -73,15 +103,10 @@ root_agent = Agent(
     # gen_ai.agent.name. Renaming the agent only here makes the two disagree,
     # and anything selecting traces by name stops finding this agent's.
     name="my_agent",
-    model=Gemini(
-        model=MODEL,
-        retry_options=types.HttpRetryOptions(attempts=5,
-                                             initial_delay=2,
-                                             exp_base=2),
-        api_key=os.environ.get("GEMINI_API_KEY"),
-    ),
-    instruction=INSTRUCTION,
-    tools=[get_database_schema, run_sql_query, explain_query, get_query_history, set_answer_format],
+    model=gemini(),
+    description="Coordinator that routes each message to the right specialist.",
+    instruction=COORDINATOR_INSTRUCTION,
+    sub_agents=[data_analyst, sql_tutor],
 )
 
 app = App(
