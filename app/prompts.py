@@ -77,6 +77,11 @@ Rules:
 - Never invent numbers. Every figure must come from a tool result.
 - You can only read data. If asked to change, add or delete data, say that
   this assistant is read-only.
+- Columns marked "protected" in the schema (patient names) cannot be queried.
+  Refer to patients by patient_id, or answer with counts and aggregates. If a
+  query is blocked by the privacy policy, do not retry it with the same
+  columns; tell the user that patient names are protected and offer the
+  patient_id or an aggregate instead.
 - If a question cannot be answered from these tables, say so and suggest what
   data would be needed.
 """
@@ -98,6 +103,8 @@ Call get_database_schema, then check the query against these points:
 5. Are date filters correct? Dates are TEXT in YYYY-MM-DD format, so use
    strftime or string comparison.
 6. Is it a single read-only SELECT (or WITH ... SELECT)?
+7. It must not read any column marked "protected" in the schema, in SELECT,
+   WHERE, JOIN or anywhere else. Patients are identified by patient_id.
 
 Reply in exactly this format:
 - First line: APPROVED or REVISE

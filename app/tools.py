@@ -36,6 +36,14 @@ MAX_DISTINCT_VALUES = 10 # show allowed values for low-cardinality text columns
 MAX_HISTORY = 5          # queries kept in query_history
 ANSWER_FORMATS = ("table", "text")
 
+# Columns that identify a patient. The schema marks them as protected, and the
+# protect_patient_identity callback (app/callbacks.py) blocks any query that
+# reads them. Add ("patients", "birth_date") here to protect dates of birth too.
+PROTECTED_COLUMNS = {
+    ("patients", "first_name"),
+    ("patients", "last_name"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers (not tools: they are not passed to the agent)
@@ -95,7 +103,8 @@ def _hint_for_error(message: str) -> str:
 def get_database_schema() -> dict:
     """Returns every table in the hospital database with its columns, primary
     keys, foreign keys (how tables join), and the allowed values of
-    low-cardinality text columns such as visit_type.
+    low-cardinality text columns such as visit_type. Columns marked
+    "protected" identify patients and cannot be queried.
 
     Call this before writing any SQL so you use exact table names, column
     names, join keys and filter values.
@@ -112,6 +121,10 @@ def get_database_schema() -> dict:
                 column = {"column": name, "type": col_type}
                 if is_pk:
                     column["primary_key"] = True
+                if (table, name) in PROTECTED_COLUMNS:
+                    column["protected"] = True
+                    columns.append(column)
+                    continue  # never sample values from a protected column
                 if col_type == "TEXT":
                     distinct = conn.execute(
                         f'SELECT DISTINCT "{name}" FROM "{table}" LIMIT {MAX_DISTINCT_VALUES + 1}'

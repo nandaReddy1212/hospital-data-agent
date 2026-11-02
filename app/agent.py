@@ -21,6 +21,7 @@ from google.adk.models import Gemini
 from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
 
+from .callbacks import audit_sql, protect_patient_identity
 from .prompts import (
     ANALYST_INSTRUCTION,
     COORDINATOR_INSTRUCTION,
@@ -61,6 +62,10 @@ def gemini() -> Gemini:
 #      specialist, which then talks to the user directly.
 #   2. AgentTool   -> the analyst CALLS the reviewer like a function and gets
 #      its reply back; the reviewer never talks to the user.
+#
+# Callbacks (app/callbacks.py) wrap every tool call of the agents that touch
+# SQL: protect_patient_identity runs before each tool and can block it;
+# audit_sql runs after each tool and logs it.
 # ---------------------------------------------------------------------------
 
 sql_reviewer = Agent(
@@ -86,6 +91,8 @@ data_analyst = Agent(
         set_answer_format,
         AgentTool(agent=sql_reviewer),
     ],
+    before_tool_callback=protect_patient_identity,
+    after_tool_callback=audit_sql,
 )
 
 sql_tutor = Agent(
@@ -95,6 +102,7 @@ sql_tutor = Agent(
                 "hospital tables. Does not fetch data answers.",
     instruction=TUTOR_INSTRUCTION,
     tools=[get_database_schema, explain_query],
+    after_tool_callback=audit_sql,
 )
 
 root_agent = Agent(

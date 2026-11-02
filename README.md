@@ -71,6 +71,30 @@ Tools live in [`app/tools.py`](app/tools.py).
 - Gemini API calls retry up to 5 times with exponential backoff (2s, 4s, 8s, 16s) on 429/503 errors
 - SQL errors come back with a hint (e.g. "check the schema") so the agent can fix its own query
 
+**Privacy and audit callbacks**
+
+ADK callbacks run automatically around every tool call, like database triggers: the model
+cannot skip them. They live in [`app/callbacks.py`](app/callbacks.py).
+
+| Callback | When | What it does |
+|---|---|---|
+| `protect_patient_identity` | before `run_sql_query` | Blocks any query that reads a protected column (`patients.first_name`, `patients.last_name`) and tells the agent to use `patient_id` or aggregates instead. Fails closed: a query it cannot verify is not run |
+| `audit_sql` | after every SQL tool | Appends one JSON line per query to `logs/query_audit.jsonl`: time, session, agent, outcome, row count, SQL |
+
+Protected columns are found with **SQLite's authorizer** rather than by searching the SQL text,
+so table aliases, `SELECT *`, CTEs, and names used only in `WHERE` or `ORDER BY` are all caught,
+while doctors' names (same column names, different table) are still allowed. The query is
+compiled with `EXPLAIN`, so no data is read during the check.
+
+```
+You:   List the names of patients with the most visits.
+Agent: (query reading patients.first_name is blocked before it runs)
+       Patient names are protected, so here are the top patients by patient_id instead ...
+```
+
+Privacy is enforced in three layers: the schema marks the columns as `protected`, the
+reviewer rejects SQL that reads them, and the callback blocks them even if both are ignored.
+
 **Session state (follow-up questions)**
 
 The agent keeps a small notepad in ADK session state:
@@ -98,21 +122,23 @@ Agent: (adds a visit_date filter to last_query and re-runs it)
 uv run pytest tests/unit
 ```
 
-28 unit tests run without any LLM calls: the tools (schema output, query results, row caps, every guardrail,
-session-state updates) and the agent wiring (routing structure, which agents can run queries,
-valid state placeholders in every prompt).
+51 unit tests run without any LLM calls: the tools (schema output, query results, row caps, every guardrail,
+session-state updates), the agent wiring (routing structure, which agents can run queries,
+valid state placeholders in every prompt), and the callbacks (which queries are blocked,
+what is written to the audit log).
 
 ## Data model
 
 ```
 departments (department_id, name, floor)
 doctors     (doctor_id, first_name, last_name, department_id, hire_date)
-patients    (patient_id, first_name, last_name, birth_date, gender, city, insurance_type)
+patients    (patient_id, first_name*, last_name*, birth_date, gender, city, insurance_type)
 visits      (visit_id, patient_id, doctor_id, department_id, visit_date,
              visit_type, diagnosis, total_charge)
 ```
 
 8 departments · 24 doctors · 300 patients · 1,500 visits (Jan 2025 – Sep 2026)
+\* protected: the agent cannot read these columns
 
 ## Run it locally
 
@@ -150,7 +176,7 @@ Open the local URL it prints and try questions like:
 - [x] **Phase 2** – Stronger tool design: query validation, timeouts, error hints, `explain_query`, unit tests
 - [x] **Phase 3** – Session state for follow-up questions and user preferences
 - [x] **Phase 4** – Multi-agent design: coordinator, data analyst, SQL reviewer (agent-as-tool), tutor
-- [ ] **Phase 5** – Callbacks: query logging and sensitive-column blocking
+- [x] **Phase 5** – Callbacks: audit logging and patient-name blocking with SQLite's authorizer
 - [ ] **Phase 6** – Evaluation suite with `agents-cli eval run`
 - [ ] **Phase 7** – Deploy to Cloud Run with BigQuery as the backend
 
